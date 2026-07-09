@@ -21,6 +21,8 @@ defmodule MatterEx.FabricStore do
   `persist/2` reconciles the whole set (writing current fabrics, deleting removed
   ones); `load/2` reads it back into the commissioning agent and the clusters and
   returns the loaded fabric credentials for the node to bring CASE back up.
+  `clear/3` is the inverse of both — it resets the clusters and wipes storage for
+  a factory reset.
   """
 
   require Logger
@@ -43,6 +45,22 @@ defmodule MatterEx.FabricStore do
       [:nocs, :fabrics, :trusted_root_certificates, :commissioned_fabrics, :current_fabric_index, :_next_fabric_index],
     access_control: [:acl, :extension],
     group_key_management: [:group_key_map, :group_table, :_key_sets]
+  }
+
+  # Values to restore each snapshotted cluster field to on a factory reset —
+  # the cluster's freshly-initialized defaults (attribute defaults plus the
+  # internal fields' init values). Keys mirror @cluster_snapshot.
+  @cluster_defaults %{
+    operational_credentials: %{
+      nocs: [],
+      fabrics: [],
+      trusted_root_certificates: [],
+      commissioned_fabrics: 0,
+      current_fabric_index: 0,
+      _next_fabric_index: 1
+    },
+    access_control: %{acl: [], extension: []},
+    group_key_management: %{group_key_map: [], group_table: [], _key_sets: %{}}
   }
 
   @doc """
@@ -104,6 +122,32 @@ defmodule MatterEx.FabricStore do
     else
       _ -> []
     end
+  end
+
+  @doc """
+  Wipe all persisted Matter state — the inverse of `persist/3`, for factory reset.
+
+  Resets the live fabric-scoped clusters (OperationalCredentials, AccessControl,
+  GroupKeyManagement) back to their initial defaults, then deletes every
+  `matter/`-prefixed key from `backend`. `backend` may be `nil` (in-memory node),
+  in which case only the clusters are reset. The commissioning agent and the
+  message handler's session state are reset separately by the caller.
+  """
+  @spec clear(module(), Storage.backend() | nil) :: :ok
+  def clear(device, backend) do
+    for {cluster, defaults} <- @cluster_defaults do
+      case cluster_pid(device, cluster) do
+        nil -> :ok
+        name -> GenServer.call(name, {:restore_state, defaults})
+      end
+    end
+
+    if backend do
+      for key <- Storage.keys(backend, "matter/"), do: Storage.delete(backend, key)
+    end
+
+    Logger.info("FabricStore: cleared all persisted fabric state")
+    :ok
   end
 
   # ── Private ─────────────────────────────────────────────────────

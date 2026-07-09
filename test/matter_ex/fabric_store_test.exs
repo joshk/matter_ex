@@ -1,7 +1,7 @@
 defmodule MatterEx.FabricStoreTest do
   use ExUnit.Case, async: true
 
-  alias MatterEx.{Commissioning, FabricStore}
+  alias MatterEx.{Commissioning, FabricStore, Storage}
   alias MatterEx.Storage.FileSystem
 
   @moduletag :tmp_dir
@@ -119,5 +119,35 @@ defmodule MatterEx.FabricStoreTest do
     FabricStore.persist(Device, backend, commissioning: comm)
     assert :error = MatterEx.Storage.get(backend, "matter/fabric/2")
     assert {:ok, _} = MatterEx.Storage.get(backend, "matter/fabric/1")
+  end
+
+  test "clear resets clusters to defaults and wipes storage", %{backend: backend, comm: comm} do
+    seed_state(comm)
+    FabricStore.persist(Device, backend, commissioning: comm)
+    assert Storage.keys(backend, "matter/") != []
+
+    assert :ok = FabricStore.clear(Device, backend)
+
+    # Every persisted key is gone.
+    assert Storage.keys(backend, "matter/") == []
+
+    # Fabric-scoped clusters are back to their initial defaults.
+    assert {:ok, []} = GenServer.call(acl_name(), {:read_attribute, :acl})
+    assert {:ok, []} = GenServer.call(opcreds_name(), {:read_attribute, :nocs})
+    assert {:ok, []} = GenServer.call(opcreds_name(), {:read_attribute, :fabrics})
+    assert {:ok, 0} = GenServer.call(opcreds_name(), {:read_attribute, :commissioned_fabrics})
+
+    gkm_state = GenServer.call(gkm_name(), :get_state)
+    assert gkm_state.group_key_map == []
+    assert gkm_state._key_sets == %{}
+  end
+
+  test "clear with a nil backend still resets clusters", %{comm: comm} do
+    seed_state(comm)
+
+    assert :ok = FabricStore.clear(Device, nil)
+
+    assert {:ok, []} = GenServer.call(acl_name(), {:read_attribute, :acl})
+    assert {:ok, []} = GenServer.call(opcreds_name(), {:read_attribute, :nocs})
   end
 end
